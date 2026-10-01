@@ -79,6 +79,5 @@ async def main():
         except Exception:
             logger.exception("Ошибка в цикле")
         await asyncio.sleep(CHECK_INTERVAL)
-
 if __name__ == "__main__":
     asyncio.run(main())
