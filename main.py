@@ -40,10 +40,11 @@ def mark_seen(conn, guid, title, link, published):
     conn.commit()
 
 
-def matches_keywords(title):
+def matches_keywords(title, description=""):
     if not KEYWORDS:
         return True
-    return any(k in title.lower() for k in KEYWORDS)
+    haystack = (title + " " + description).lower()
+    return any(k in haystack for k in KEYWORDS)
 
 
 async def send_telegram(bot, text):
@@ -78,21 +79,25 @@ async def check_feed(bot, conn, url):
     for i, entry in enumerate(feed.entries):
         guid = entry.get("id") or entry.get("guid") or entry.get("link")
         title = entry.get("title", "Без названия")
+        description = entry.get("summary", "") or entry.get("description", "") or ""
         link = entry.get("link", "")
         published = entry.get("published", "")
 
         if i < 3:
-            logger.info("Пример записи #%d: %s", i, title[:100])
+            logger.info("Пример #%d title: %s", i, title[:100])
+            logger.info("Пример #%d desc: %s", i, description[:150])
 
         if not guid or not is_new(conn, guid):
             continue
 
-        if not matches_keywords(title):
-            logger.info("Пропущен (нет ключевых слов): %s", title[:100])
+        if not matches_keywords(title, description):
+            logger.info("Пропущен: %s | %s", title[:60], description[:80])
             mark_seen(conn, guid, title, link, published)
             continue
 
+        clean_desc = html.escape(description[:300]) if description else "—"
         message = (f"🆕 <b>Новый тендер</b>\n\n<b>Название:</b> {html.escape(title)}\n"
+                   f"<b>Описание:</b> {clean_desc}\n"
                    f"<b>Опубликовано:</b> {html.escape(published)}\n"
                    f"<a href=\"{html.escape(link, quote=True)}\">Открыть закупку</a>")
         try:
