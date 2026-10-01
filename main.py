@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime
 
 import feedparser
+import requests
 from telegram import Bot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -20,6 +21,7 @@ KEYWORDS = [k.strip().lower() for k in os.getenv("KEYWORDS", "").split(",") if k
 
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""CREATE TABLE IF NOT EXISTS seen_tenders (
@@ -27,35 +29,67 @@ def init_db():
     conn.commit()
     return conn
 
+
 def is_new(conn, guid):
     return conn.execute("SELECT 1 FROM seen_tenders WHERE guid = ?", (guid,)).fetchone() is None
+
 
 def mark_seen(conn, guid, title, link, published):
     conn.execute("INSERT OR IGNORE INTO seen_tenders VALUES (?, ?, ?, ?, ?)",
                  (guid, title, link, published, datetime.utcnow().isoformat()))
     conn.commit()
 
+
 def matches_keywords(title):
     if not KEYWORDS:
         return True
     return any(k in title.lower() for k in KEYWORDS)
 
+
 async def send_telegram(bot, text):
-    await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML", disable_web_page_preview=True)
+    await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML",
+                           disable_web_page_preview=True)
+
+
+async def fetch_rss(url):
+    def _fetch():
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; TenderBot/1.0)"}
+        r = requests.get(url, headers=headers, timeout=30)
+        logger.info("HTTP статус: %s, размер: %d байт", r.status_code, len(r.content))
+        return feedparser.parse(r.content)
+    return await asyncio.to_thread(_fetch)
+
 
 async def check_feed(bot, conn, url):
     logger.info("Проверка RSS: %s", url)
-    feed = await asyncio.to_thread(feedparser.parse, url)
-    for entry in feed.entries:
+    try:
+        feed = await fetch_rss(url)
+    except Exception:
+        logger.exception("Не удалось прочитать RSS")
+        return
+
+    logger.info("Получено записей: %d", len(feed.entries))
+    if not feed.entries:
+        logger.warning("Лента пустая или не распарсилась")
+        return
+
+    for i, entry in enumerate(feed.entries):
         guid = entry.get("id") or entry.get("guid") or entry.get("link")
         title = entry.get("title", "Без названия")
         link = entry.get("link", "")
         published = entry.get("published", "")
+
+        if i < 3:
+            logger.info("Пример записи #%d: %s", i, title[:100])
+
         if not guid or not is_new(conn, guid):
             continue
+
         if not matches_keywords(title):
+            logger.info("Пропущен (нет ключевых слов): %s", title[:100])
             mark_seen(conn, guid, title, link, published)
             continue
+
         message = (f"🆕 <b>Новый тендер</b>\n\n<b>Название:</b> {html.escape(title)}\n"
                    f"<b>Опубликовано:</b> {html.escape(published)}\n"
                    f"<a href=\"{html.escape(link, quote=True)}\">Открыть закупку</a>")
@@ -66,12 +100,14 @@ async def check_feed(bot, conn, url):
         except Exception:
             logger.exception("Ошибка отправки")
 
+
 async def main():
     if not BOT_TOKEN or not CHAT_ID:
         logger.error("Не заданы TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID")
         return
     bot = Bot(token=BOT_TOKEN)
     conn = init_db()
+    logger.info("Бот запущен, интервал проверки: %d секунд", CHECK_INTERVAL)
     while True:
         try:
             for url in RSS_URLS:
@@ -79,5 +115,7 @@ async def main():
         except Exception:
             logger.exception("Ошибка в цикле")
         await asyncio.sleep(CHECK_INTERVAL)
+
+
 if __name__ == "__main__":
     asyncio.run(main())
