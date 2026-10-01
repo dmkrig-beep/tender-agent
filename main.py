@@ -53,8 +53,10 @@ async def send_telegram(bot, text):
 
 async def fetch_rss(url):
     def _fetch():
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         headers = {"User-Agent": "Mozilla/5.0 (compatible; TenderBot/1.0)"}
-        r = requests.get(url, headers=headers, timeout=30)
+        r = requests.get(url, headers=headers, timeout=30, verify=False)
         logger.info("HTTP статус: %s, размер: %d байт", r.status_code, len(r.content))
         return feedparser.parse(r.content)
     return await asyncio.to_thread(_fetch)
